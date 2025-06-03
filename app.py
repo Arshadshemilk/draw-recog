@@ -13,7 +13,7 @@ from model import strokes_to_seresnext50_32x4d, process_single_drawing
 st.set_page_config(page_title="Drawing Recognition", layout="wide")
 
 # Model weights URL (Google Drive)
-MODEL_WEIGHTS_URL = "https://drive.google.com/uc?id=YOUR_GOOGLE_DRIVE_FILE_ID"  # You'll need to replace this with your Google Drive file ID
+MODEL_WEIGHTS_URL = "https://drive.google.com/uc?id=1IAHOwJsEWaPdexvPmSYcUMcJJZ9HsNpv"  # You'll need to replace this with your Google Drive file ID
 MODEL_WEIGHTS_PATH = "kaggle-quickdraw-weights.pth"
 
 def download_model_weights():
