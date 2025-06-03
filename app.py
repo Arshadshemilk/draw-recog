@@ -8,6 +8,7 @@ import json
 import os
 import gdown
 import time
+import tempfile
 from model import strokes_to_seresnext50_32x4d, process_single_drawing
 
 # Set page config
@@ -15,19 +16,39 @@ st.set_page_config(page_title="Drawing Recognition", layout="wide")
 
 # Model weights URL (Google Drive)
 MODEL_WEIGHTS_URL = "https://drive.google.com/uc?id=1IAHOwJsEWaPdexvPmSYcUMcJJZ9HsNpv"
-MODEL_WEIGHTS_PATH = "kaggle-quickdraw-weights.pth"
 
+@st.cache_data
 def download_model_weights():
-    """Download the model weights if they don't exist."""
-    if not os.path.exists(MODEL_WEIGHTS_PATH):
-        st.info("Downloading model weights... This may take a few minutes.")
-        try:
-            gdown.download(MODEL_WEIGHTS_URL, MODEL_WEIGHTS_PATH, quiet=False)
+    """Download and cache the model weights in memory."""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            st.info("Downloading model weights... This may take a few minutes.")
+            gdown.download(MODEL_WEIGHTS_URL, tmp_file.name, quiet=False)
+            weights = torch.load(tmp_file.name, map_location='cpu')
+            os.unlink(tmp_file.name)  # Delete the temporary file
             st.success("Model weights downloaded successfully!")
-        except Exception as e:
-            st.error(f"Error downloading model weights: {str(e)}")
-            return False
-    return True
+            return weights
+    except Exception as e:
+        st.error(f"Error downloading model weights: {str(e)}")
+        return None
+
+@st.cache_resource
+def load_model():
+    """Load and cache the model in memory."""
+    try:
+        # Download weights directly to memory
+        weights = download_model_weights()
+        if weights is None:
+            st.stop()
+            
+        # Initialize model
+        model = strokes_to_seresnext50_32x4d(img_size=32, window=64, num_classes=340)
+        model.load_state_dict(weights)
+        model.eval()
+        return model
+    except Exception as e:
+        st.error(f"Error loading model: {str(e)}")
+        st.stop()
 
 # Title
 st.title("Drawing Recognition App")
@@ -115,16 +136,6 @@ def convert_canvas_to_strokes(canvas_result):
             # Normalize the entire drawing
             return normalize_drawing(strokes)
     return None
-
-# Initialize model
-@st.cache_resource
-def load_model():
-    if not download_model_weights():
-        st.stop()
-    model = strokes_to_seresnext50_32x4d(img_size=32, window=64, num_classes=340)
-    model.load_state_dict(torch.load(MODEL_WEIGHTS_PATH, map_location='cpu'))
-    model.eval()
-    return model
 
 if st.button("Recognize Drawing"):
     if canvas_result.image_data is not None:
