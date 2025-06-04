@@ -5,3 +5,4 @@ numpy
 pillow
 streamlit-drawable-canvas==0.9.3
 gdown==4.7.1 
+matplotlib.pyplot
