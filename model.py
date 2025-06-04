@@ -188,34 +188,54 @@ def strokes_to_seresnext50_32x4d(img_size, window, num_classes):
 
 
 def resample_to(drawing, n):
+    """Resample the drawing to have exactly n points distributed across strokes."""
     total_len = 0
+    stroke_lengths = []
     for stroke in drawing:
-        total_len += len(stroke[0])
+        stroke_len = len(stroke[0])
+        total_len += stroke_len
+        stroke_lengths.append(stroke_len)
     
     if total_len <= 0:
         return drawing
     
+    # Calculate target points for each stroke while ensuring the sum is exactly n
+    points_per_stroke = []
+    remaining_points = n
+    for length in stroke_lengths[:-1]:  # Process all but the last stroke
+        points = max(1, round(n * length / total_len))
+        points = min(points, remaining_points - 1)  # Ensure we leave at least 1 point for remaining strokes
+        points_per_stroke.append(points)
+        remaining_points -= points
+    
+    # Assign remaining points to the last stroke
+    points_per_stroke.append(remaining_points)
+    
     result = []
-    for stroke in drawing:
-        stroke_len = len(stroke[0])
-        if stroke_len <= 0:
+    for stroke, target_len in zip(drawing, points_per_stroke):
+        if target_len <= 0:
             continue
             
-        stroke_n = max(1, round(n * stroke_len / total_len))
-        
-        t = np.linspace(0, 1, stroke_len)
-        t_resampled = np.linspace(0, 1, stroke_n)
+        # Create evenly spaced points
+        t = np.linspace(0, 1, len(stroke[0]))
+        t_resampled = np.linspace(0, 1, target_len)
         
         x_resampled = np.interp(t_resampled, t, stroke[0])
         y_resampled = np.interp(t_resampled, t, stroke[1])
         
-        result.append([x_resampled.tolist(), y_resampled.tolist()])
+        # If time values exist, interpolate them too
+        if len(stroke) > 2:
+            time_resampled = np.interp(t_resampled, t, stroke[2])
+            result.append([x_resampled.tolist(), y_resampled.tolist(), time_resampled.tolist()])
+        else:
+            result.append([x_resampled.tolist(), y_resampled.tolist(), list(range(target_len))])
     
     return result
 
 
 def process_single_drawing(drawing, out_size=256, actual_points=256, padding=16):
-    # Resample the drawing
+    """Process a drawing into the format expected by the model."""
+    # Resample the drawing to have exactly actual_points points
     drawing = resample_to(drawing, actual_points)
     
     # Initialize arrays
@@ -224,23 +244,33 @@ def process_single_drawing(drawing, out_size=256, actual_points=256, padding=16)
     
     # Process each stroke
     idx = padding
+    points_added = 0
     for stroke in drawing:
         n = len(stroke[0])
-        points[0, idx:idx + n] = stroke[0]  # x coordinates
-        points[1, idx:idx + n] = stroke[1]  # y coordinates
-        points[2, idx:idx + n] = 1          # stroke indicator
+        if points_added + n > actual_points:
+            n = actual_points - points_added  # Truncate if necessary
+        if n <= 0:
+            break
+            
+        points[0, idx:idx + n] = stroke[0][:n]  # x coordinates
+        points[1, idx:idx + n] = stroke[1][:n]  # y coordinates
+        points[2, idx:idx + n] = 1              # stroke indicator
+        
+        # Calculate indices
+        indices[points_added:points_added + n] = np.arange(idx, idx + n)
+        
         idx += n + padding
+        points_added += n
+        
+        if points_added >= actual_points:
+            break
     
-    # Calculate indices
-    idx = 0
-    curr_idx = padding
-    for stroke in drawing:
-        n = len(stroke[0])
-        indices[idx:idx + n] = np.arange(curr_idx, curr_idx + n)
-        idx += n
-        curr_idx += n + padding
+    # Ensure we have exactly actual_points indices
+    if points_added < actual_points:
+        # Fill remaining indices with the last valid index
+        indices[points_added:] = idx - 1
     
-    # Normalize points
+    # Normalize points to [-1, 1] range
     points = points * 2 - 1
     
     return points, indices 
