@@ -190,112 +190,146 @@ def strokes_to_seresnext50_32x4d(img_size, window, num_classes):
 def resample_to(drawing, n):
     """Resample the drawing to have exactly n points distributed across strokes."""
     if not drawing:
-        return drawing
-        
-    total_len = 0
-    stroke_lengths = []
-    for stroke in drawing:
-        stroke_len = len(stroke[0])
-        total_len += stroke_len
-        stroke_lengths.append(stroke_len)
+        return []
     
-    if total_len <= 0:
-        return drawing
+    # Ensure we have valid strokes with points
+    valid_strokes = [stroke for stroke in drawing if len(stroke[0]) > 1]
+    if not valid_strokes:
+        # Create a minimal valid drawing if no valid strokes
+        return [[np.linspace(0, 1, n).tolist(), 
+                np.zeros(n).tolist(), 
+                np.arange(n).tolist()]]
     
-    # Calculate target points for each stroke while ensuring the sum is exactly n
+    # Calculate total points and length of each stroke
+    total_len = sum(len(stroke[0]) for stroke in valid_strokes)
+    
+    # Distribute points among strokes
     points_per_stroke = []
     remaining_points = n
     
-    # Handle single stroke case
-    if len(stroke_lengths) == 1:
+    if len(valid_strokes) == 1:
         points_per_stroke = [n]
     else:
-        # Distribute points proportionally
-        for length in stroke_lengths[:-1]:
-            points = max(2, round(n * length / total_len))
-            points = min(points, remaining_points - len(stroke_lengths))  # Leave room for other strokes
+        for i, stroke in enumerate(valid_strokes[:-1]):
+            stroke_len = len(stroke[0])
+            points = max(2, min(
+                remaining_points - 2 * (len(valid_strokes) - i - 1),  # Leave space for remaining strokes
+                round(n * stroke_len / total_len)
+            ))
             points_per_stroke.append(points)
             remaining_points -= points
-        
-        # Assign remaining points to the last stroke
-        points_per_stroke.append(max(2, remaining_points))
+        points_per_stroke.append(remaining_points)
     
+    # Resample each stroke
     result = []
-    for stroke, target_len in zip(drawing, points_per_stroke):
-        if target_len <= 1:  # Skip if too few points
+    total_resampled = 0
+    
+    for stroke, target_len in zip(valid_strokes, points_per_stroke):
+        if total_resampled + target_len > n:
+            target_len = n - total_resampled
+        if target_len < 2:
             continue
             
-        # Create evenly spaced points
         t = np.linspace(0, 1, len(stroke[0]))
         t_resampled = np.linspace(0, 1, target_len)
         
         x_resampled = np.interp(t_resampled, t, stroke[0])
         y_resampled = np.interp(t_resampled, t, stroke[1])
         
-        # If time values exist, interpolate them too
         if len(stroke) > 2:
             time_resampled = np.interp(t_resampled, t, stroke[2])
-            result.append([x_resampled.tolist(), y_resampled.tolist(), time_resampled.tolist()])
         else:
-            result.append([x_resampled.tolist(), y_resampled.tolist(), list(range(target_len))])
+            time_resampled = np.linspace(0, target_len - 1, target_len)
+            
+        result.append([x_resampled.tolist(), 
+                      y_resampled.tolist(), 
+                      time_resampled.tolist()])
+        
+        total_resampled += target_len
+        if total_resampled >= n:
+            break
+    
+    # If we still don't have enough points, pad the last stroke
+    if total_resampled < n:
+        last_stroke = result[-1]
+        points_needed = n - total_resampled
+        
+        # Extend the last stroke
+        for i in range(3):  # For x, y, and time coordinates
+            last_point = last_stroke[i][-1]
+            last_stroke[i].extend([last_point] * points_needed)
     
     return result
 
 
-def process_single_drawing(drawing, out_size=240, actual_points=240, padding=16):
+def process_single_drawing(drawing, out_size=256, actual_points=256, padding=16):
     """Process a drawing into the format expected by the model."""
-    # Resample the drawing to have exactly actual_points points
-    drawing = resample_to(drawing, actual_points)
+    # First resample the drawing to match JavaScript's 60fps sampling
+    resampled_drawing = []
+    for stroke in drawing:
+        # Each stroke is [x_coords, y_coords, t_coords]
+        x_coords = np.array(stroke[0])
+        y_coords = np.array(stroke[1])
+        t_coords = np.array(stroke[2])
+        
+        # Calculate number of points needed based on time duration
+        duration = t_coords[-1] - t_coords[0]
+        num_points = int(duration / 16) + 1  # 16ms per point (60fps)
+        
+        # Create evenly spaced time points
+        t_resampled = np.linspace(t_coords[0], t_coords[-1], num_points)
+        
+        # Resample x and y coordinates
+        x_resampled = np.interp(t_resampled, t_coords, x_coords)
+        y_resampled = np.interp(t_resampled, t_coords, y_coords)
+        
+        resampled_drawing.append([
+            x_resampled.tolist(),
+            y_resampled.tolist(),
+            t_resampled.tolist()
+        ])
     
     # Initialize arrays
     points = np.zeros((3, out_size), dtype=np.float32)
     indices = np.zeros(actual_points, dtype=np.int64)
     
-    # Calculate total number of points in the drawing
-    total_points = sum(len(stroke[0]) for stroke in drawing)
-    
-    # Adjust actual_points if needed
-    actual_points = min(actual_points, total_points)
-    
     # Process each stroke
     idx = padding
     points_added = 0
     
-    for stroke in drawing:
+    for stroke in resampled_drawing:
         n = len(stroke[0])
         if points_added + n > actual_points:
-            n = actual_points - points_added  # Truncate if necessary
+            n = actual_points - points_added
         if n <= 0:
             break
-            
+        
         # Add points
-        points[0, idx:idx + n] = stroke[0][:n]  # x coordinates
-        points[1, idx:idx + n] = stroke[1][:n]  # y coordinates
-        points[2, idx:idx + n] = 1              # stroke indicator
+        end_idx = min(idx + n, out_size)
+        actual_n = end_idx - idx
+        
+        points[0, idx:end_idx] = stroke[0][:actual_n]
+        points[1, idx:end_idx] = stroke[1][:actual_n]
+        points[2, idx:end_idx] = 1  # Set time dimension to 1 for active points
         
         # Generate indices for this stroke
-        curr_indices = np.arange(idx, idx + n)
-        indices[points_added:points_added + n] = curr_indices
+        indices[points_added:points_added + actual_n] = np.arange(idx, end_idx)
         
-        idx += n + padding
-        points_added += n
+        idx += actual_n + padding
+        points_added += actual_n
         
         if points_added >= actual_points:
             break
     
-    # If we have fewer points than actual_points, pad the indices
+    # If we don't have enough points, pad with the last valid index
     if points_added < actual_points:
-        last_valid_idx = indices[points_added - 1] if points_added > 0 else padding
-        indices[points_added:] = last_valid_idx
-    
-    # Ensure indices don't exceed the points array size
-    indices = np.clip(indices, 0, out_size - 1)
+        last_idx = indices[points_added - 1] if points_added > 0 else padding
+        indices[points_added:] = last_idx
     
     # Normalize points to [-1, 1] range
     points = points * 2 - 1
     
-    # Verify shapes before returning
-    assert len(indices) == actual_points, f"Expected {actual_points} indices, got {len(indices)}"
-    assert points.shape == (3, out_size), f"Expected points shape (3, {out_size}), got {points.shape}"
+    # Ensure indices are within bounds
+    indices = np.clip(indices, 0, out_size - 1)
     
     return points, indices 
