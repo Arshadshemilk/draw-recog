@@ -262,7 +262,7 @@ def resample_to(drawing, n):
     return result
 
 
-def process_single_drawing(drawing, out_size=256, actual_points=256, padding=16):
+def process_single_drawing(drawing, out_size=2048, actual_points=256, padding=16):
     """Process a drawing into the format expected by the model."""
     # First resample the drawing to match JavaScript's 60fps sampling
     resampled_drawing = []
@@ -331,5 +331,9 @@ def process_single_drawing(drawing, out_size=256, actual_points=256, padding=16)
     
     # Ensure indices are within bounds
     indices = np.clip(indices, 0, out_size - 1)
+    
+    # Verify shapes
+    assert points.shape == (3, out_size), f"Expected points shape (3, {out_size}), got {points.shape}"
+    assert len(indices) == actual_points, f"Expected {actual_points} indices, got {len(indices)}"
     
     return points, indices 
