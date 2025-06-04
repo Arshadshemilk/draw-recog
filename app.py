@@ -7,6 +7,7 @@ import io
 import json
 import os
 from model import strokes_to_seresnext50_32x4d, process_single_drawing
+import matplotlib.pyplot as plt
 
 # Set page config
 st.set_page_config(page_title="Drawing Recognition", layout="wide")
@@ -73,22 +74,6 @@ def load_model():
         st.error("Please make sure the model weights file exists in the repository.")
         st.stop()
 
-# Title
-st.title("Drawing Recognition App")
-st.write("Draw something in the canvas below and the model will try to recognize it!")
-
-# Create canvas
-canvas_result = st_canvas(
-    fill_color="rgba(255, 165, 0, 0.3)",
-    stroke_width=3,
-    stroke_color="#000000",
-    background_color="#ffffff",
-    height=400,
-    width=400,
-    drawing_mode="freedraw",
-    key="canvas",
-)
-
 def convert_canvas_to_strokes(canvas_result):
     """Convert canvas data to stroke format matching the original dataset."""
     if canvas_result.json_data is not None:
@@ -114,56 +99,289 @@ def convert_canvas_to_strokes(canvas_result):
         return strokes
     return None
 
-if st.button("Recognize Drawing"):
-    if canvas_result.image_data is not None:
-        with st.spinner("Processing..."):
-            # Convert canvas data to strokes
-            drawing = convert_canvas_to_strokes(canvas_result)
+def visualize_strokes(strokes, title="Stroke Data Visualization"):
+    """Create a matplotlib plot of the stroke data."""
+    if not strokes:
+        return None
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Plot 1: X-Y coordinates
+    colors = plt.cm.tab10(np.linspace(0, 1, len(strokes)))
+    for i, stroke in enumerate(strokes):
+        if stroke.shape[1] > 1:
+            ax1.plot(stroke[0], stroke[1], 'o-', color=colors[i], 
+                    linewidth=2, markersize=3, label=f'Stroke {i+1}')
+    
+    ax1.set_xlabel('X Coordinate')
+    ax1.set_ylabel('Y Coordinate')
+    ax1.set_title('Drawing Path (X-Y)')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    ax1.set_aspect('equal')
+    
+    # Plot 2: Time series data
+    for i, stroke in enumerate(strokes):
+        if stroke.shape[1] > 1:
+            ax2.plot(stroke[2], stroke[0], 'o-', color=colors[i], 
+                    linewidth=2, markersize=3, label=f'Stroke {i+1} - X')
+            ax2.plot(stroke[2], stroke[1], 's--', color=colors[i], 
+                    linewidth=2, markersize=3, alpha=0.7, label=f'Stroke {i+1} - Y')
+    
+    ax2.set_xlabel('Time')
+    ax2.set_ylabel('Coordinate Value')
+    ax2.set_title('Coordinates vs Time')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    plt.suptitle(title)
+    plt.tight_layout()
+    return fig
+
+def parse_stroke_input(text_input):
+    """Parse stroke data from text input. Supports multiple formats."""
+    try:
+        # Remove extra whitespace and newlines
+        text_input = text_input.strip()
+        
+        if not text_input:
+            return None
             
-            if drawing and len(drawing) > 0:
-                try:
-                    # Process the drawing using the corrected function
-                    points, indices = process_single_drawing(
-                        drawing, 
-                        out_size=2048,      # Match the original parameters
-                        actual_points=256,
-                        padding=16
-                    )
-                    
-                    # Load model and make prediction
-                    model = load_model()
-                    
-                    # Convert to tensor and add batch dimension
-                    points_tensor = points.unsqueeze(0)  # points is already a tensor
-                    indices_tensor = indices.unsqueeze(0)  # indices is already a tensor
+        # Try to parse as JSON first
+        try:
+            data = json.loads(text_input)
+            if isinstance(data, list):
+                # Convert to numpy arrays
+                strokes = []
+                for stroke in data:
+                    if isinstance(stroke, list) and len(stroke) == 3:
+                        strokes.append(np.array(stroke))
+                return strokes if strokes else None
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to parse as Python list format
+        try:
+            data = eval(text_input)  # Be careful with eval in production!
+            if isinstance(data, list):
+                strokes = []
+                for stroke in data:
+                    if isinstance(stroke, list) and len(stroke) == 3:
+                        strokes.append(np.array(stroke))
+                return strokes if strokes else None
+        except:
+            pass
+            
+        return None
+        
+    except Exception as e:
+        st.error(f"Error parsing stroke data: {str(e)}")
+        return None
+
+def format_strokes_for_display(strokes):
+    """Format strokes data for display in the text area."""
+    if not strokes:
+        return ""
+    
+    formatted_strokes = []
+    for stroke in strokes:
+        formatted_stroke = [
+            stroke[0].tolist(),  # X coordinates
+            stroke[1].tolist(),  # Y coordinates  
+            stroke[2].tolist()   # Time coordinates
+        ]
+        formatted_strokes.append(formatted_stroke)
+    
+    return json.dumps(formatted_strokes, indent=2)
+
+def predict_drawing(drawing):
+    """Make prediction on drawing data."""
+    if not drawing or len(drawing) == 0:
+        return None, None
+        
+    try:
+        # Process the drawing using the corrected function
+        points, indices = process_single_drawing(
+            drawing, 
+            out_size=2048,      # Match the original parameters
+            actual_points=256,
+            padding=16
+        )
+        
+        # Load model and make prediction
+        model = load_model()
+        
+        # Convert to tensor and add batch dimension
+        points_tensor = points.unsqueeze(0)  # points is already a tensor
+        indices_tensor = indices.unsqueeze(0)  # indices is already a tensor
+        
+        # Make prediction
+        with torch.no_grad():
+            output = model(points_tensor, indices_tensor)
+            
+            # Handle single sample output
+            if output.dim() == 1:
+                output = output.unsqueeze(0)
+            
+            # Get top 5 predictions
+            prob = torch.softmax(output, dim=1)
+            top_p, top_class = torch.topk(prob, k=5)
+            
+        return top_p[0], top_class[0]
+        
+    except Exception as e:
+        st.error(f"Error processing drawing: {str(e)}")
+        return None, None
+
+# Title
+st.title("Enhanced Drawing Recognition App")
+st.write("Draw something in the canvas below or input raw stroke data for recognition!")
+
+# Create two columns for the main interface
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    st.subheader("Drawing Canvas")
+    
+    # Create canvas
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=3,
+        stroke_color="#000000",
+        background_color="#ffffff",
+        height=400,
+        width=400,
+        drawing_mode="freedraw",
+        key="canvas",
+    )
+    
+    if st.button("Recognize Canvas Drawing", key="canvas_predict"):
+        if canvas_result.image_data is not None:
+            with st.spinner("Processing canvas drawing..."):
+                # Convert canvas data to strokes
+                drawing = convert_canvas_to_strokes(canvas_result)
+                
+                if drawing and len(drawing) > 0:
+                    # Store strokes in session state for display
+                    st.session_state['current_strokes'] = drawing
                     
                     # Make prediction
-                    with torch.no_grad():
-                        output = model(points_tensor, indices_tensor)
-                        
-                        # Handle single sample output
-                        if output.dim() == 1:
-                            output = output.unsqueeze(0)
-                        
-                        # Get top 5 predictions
-                        prob = torch.softmax(output, dim=1)
-                        top_p, top_class = torch.topk(prob, k=5)
-                        
-                    # Display results
-                    st.subheader("Top 5 Predictions:")
-                    for i, (p, c) in enumerate(zip(top_p[0], top_class[0])):
-                        class_name = idx_to_class.get(c.item(), f"Class_{c.item()}")
-                        confidence = p.item() * 100
-                        st.write(f"{i+1}. {class_name}: {confidence:.2f}%")
-                        
-                except Exception as e:
-                    st.error(f"Error processing drawing: {str(e)}")
-                    st.error("Please try drawing again with simpler strokes.")
-                    # Debug information
-                    st.write("Debug info:")
-                    if 'drawing' in locals():
-                        st.write(f"Number of strokes: {len(drawing)}")
-                        for i, stroke in enumerate(drawing):
-                            st.write(f"Stroke {i} shape: {stroke.shape}")
-            else:
-                st.warning("No drawing detected. Please draw something on the canvas.")
+                    top_p, top_class = predict_drawing(drawing)
+                    
+                    if top_p is not None and top_class is not None:
+                        st.session_state['predictions'] = (top_p, top_class)
+                    else:
+                        st.error("Failed to make prediction.")
+                else:
+                    st.warning("No drawing detected. Please draw something on the canvas.")
+
+with col2:
+    st.subheader("Raw Stroke Data Input")
+    
+    # Example format information
+    with st.expander("ℹ️ Stroke Data Format"):
+        st.write("""
+        **Format:** List of strokes, where each stroke is [x_coords, y_coords, time_coords]
+        
+        **Example:**
+        ```json
+        [
+          [[0, 10, 20], [0, 10, 20], [0, 16, 32]],
+          [[25, 35], [15, 25], [48, 64]]
+        ]
+        ```
+        
+        - Each stroke has 3 arrays: X coordinates, Y coordinates, and time stamps
+        - Coordinates should be numeric values
+        - You can copy the stroke data from the visualization below
+        """)
+    
+    # Text area for raw stroke input
+    stroke_input = st.text_area(
+        "Paste stroke data here:",
+        height=200,
+        placeholder="Paste your stroke data in JSON format here...",
+        key="stroke_input"
+    )
+    
+    if st.button("Recognize Raw Stroke Data", key="raw_predict"):
+        if stroke_input.strip():
+            with st.spinner("Processing raw stroke data..."):
+                # Parse the input
+                drawing = parse_stroke_input(stroke_input)
+                
+                if drawing and len(drawing) > 0:
+                    # Store strokes in session state for display
+                    st.session_state['current_strokes'] = drawing
+                    
+                    # Make prediction
+                    top_p, top_class = predict_drawing(drawing)
+                    
+                    if top_p is not None and top_class is not None:
+                        st.session_state['predictions'] = (top_p, top_class)
+                    else:
+                        st.error("Failed to make prediction.")
+                else:
+                    st.error("Invalid stroke data format. Please check the example format above.")
+        else:
+            st.warning("Please enter stroke data to analyze.")
+
+# Display stroke visualization and predictions
+st.markdown("---")
+
+# Create columns for stroke visualization and predictions
+viz_col1, viz_col2 = st.columns([2, 1])
+
+with viz_col1:
+    st.subheader("Stroke Data Visualization")
+    
+    # Display current strokes if available
+    if 'current_strokes' in st.session_state and st.session_state['current_strokes']:
+        strokes = st.session_state['current_strokes']
+        
+        # Show stroke statistics
+        st.write(f"**Number of strokes:** {len(strokes)}")
+        for i, stroke in enumerate(strokes):
+            st.write(f"- Stroke {i+1}: {stroke.shape[1]} points")
+        
+        # Create and display the plot
+        fig = visualize_strokes(strokes)
+        if fig:
+            st.pyplot(fig)
+            plt.close(fig)  # Prevent memory leaks
+        
+        # Display raw stroke data
+        with st.expander("📋 Raw Stroke Data (Copy/Paste)"):
+            formatted_data = format_strokes_for_display(strokes)
+            st.code(formatted_data, language="json")
+    else:
+        st.info("Draw something on the canvas or input stroke data to see visualization.")
+
+with viz_col2:
+    st.subheader("Predictions")
+    
+    # Display predictions if available
+    if 'predictions' in st.session_state:
+        top_p, top_class = st.session_state['predictions']
+        
+        st.write("**Top 5 Predictions:**")
+        for i, (p, c) in enumerate(zip(top_p, top_class)):
+            class_name = idx_to_class.get(c.item(), f"Class_{c.item()}")
+            confidence = p.item() * 100
+            
+            # Create a progress bar for confidence
+            st.write(f"**{i+1}. {class_name}**")
+            st.progress(confidence/100)
+            st.write(f"{confidence:.2f}%")
+            st.write("")
+    else:
+        st.info("Make a prediction to see results here.")
+
+# Clear button
+if st.button("🗑️ Clear All Data"):
+    # Clear session state
+    if 'current_strokes' in st.session_state:
+        del st.session_state['current_strokes']
+    if 'predictions' in st.session_state:
+        del st.session_state['predictions']
+    st.rerun()
