@@ -18,8 +18,12 @@ MODEL_PATH = "kaggle-quickdraw-weights.pth"
 def load_model():
     """Load and cache the model in memory."""
     try:
-        # Initialize model
-        model = strokes_to_seresnext50_32x4d(img_size=32, window=64, num_classes=340)
+        # Initialize model with correct parameters
+        model = strokes_to_seresnext50_32x4d(
+            img_size=256,  # Increased image size
+            window=64,     # Window size for temporal convolution
+            num_classes=340
+        )
         model.load_state_dict(torch.load(MODEL_PATH, map_location='cpu'))
         model.eval()
         return model
@@ -79,40 +83,52 @@ def normalize_drawing(strokes):
 def convert_canvas_to_strokes(canvas_result):
     if canvas_result.json_data is not None:
         strokes = []
-        current_time = 0  # Start time at 0
+        current_time = 0
         
         for obj in canvas_result.json_data["objects"]:
             if "path" in obj:
-                x_coords = []
-                y_coords = []
-                time_points = []
+                # Extract stroke properties from the object
+                stroke = {
+                    "x": [],
+                    "y": [],
+                    "t": [],
+                    "color": obj.get("stroke", "#000000"),
+                    "width": obj.get("strokeWidth", 3)
+                }
                 
                 for i, cmd in enumerate(obj["path"]):
                     if cmd[0] in ["M", "L"]:  # Move to or Line to
-                        x_coords.append(float(cmd[1]))
-                        y_coords.append(float(cmd[2]))
-                        # Simulate time points with even spacing
-                        time_points.append(current_time + i * 50)  # 50ms between points
+                        stroke["x"].append(float(cmd[1]))
+                        stroke["y"].append(float(cmd[2]))
+                        stroke["t"].append(current_time + i * 16)  # Match JS 60fps sampling (16ms)
                 
-                if x_coords:
+                if stroke["x"]:  # Only add strokes with points
                     # Normalize coordinates to [0, 1] range
-                    x_min, x_max = min(x_coords), max(x_coords)
-                    y_min, y_max = min(y_coords), max(y_coords)
+                    x_min, x_max = min(stroke["x"]), max(stroke["x"])
+                    y_min, y_max = min(stroke["y"]), max(stroke["y"])
                     x_range = x_max - x_min if x_max > x_min else 1
                     y_range = y_max - y_min if y_max > y_min else 1
                     
-                    x_coords = [(x - x_min) / x_range for x in x_coords]
-                    y_coords = [(y - y_min) / y_range for y in y_coords]
+                    stroke["x"] = [(x - x_min) / x_range for x in stroke["x"]]
+                    stroke["y"] = [(y - y_min) / y_range for y in stroke["y"]]
                     
                     # Adjust time points to be relative to first point
-                    time_points = [t - time_points[0] for t in time_points]
+                    first_time = stroke["t"][0]
+                    stroke["t"] = [t - first_time for t in stroke["t"]]
                     
-                    strokes.append([x_coords, y_coords, time_points])
-                    current_time = time_points[-1] + 100  # Add gap between strokes
+                    strokes.append(stroke)
+                    current_time = stroke["t"][-1] + 100  # Add gap between strokes
         
         if strokes:
-            # Normalize the entire drawing
-            return normalize_drawing(strokes)
+            # Convert to the format expected by process_single_drawing
+            drawing = []
+            for stroke in strokes:
+                drawing.append([
+                    stroke["x"],
+                    stroke["y"],
+                    stroke["t"]
+                ])
+            return drawing
     return None
 
 if st.button("Recognize Drawing"):
