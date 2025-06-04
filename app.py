@@ -6,48 +6,26 @@ from PIL import Image
 import io
 import json
 import os
-import gdown
-import time
-import tempfile
 from model import strokes_to_seresnext50_32x4d, process_single_drawing
 
 # Set page config
 st.set_page_config(page_title="Drawing Recognition", layout="wide")
 
-# Model weights URL (Google Drive)
-MODEL_WEIGHTS_URL = "https://drive.google.com/uc?id=1IAHOwJsEWaPdexvPmSYcUMcJJZ9HsNpv"
-
-@st.cache_data
-def download_model_weights():
-    """Download and cache the model weights in memory."""
-    try:
-        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-            st.info("Downloading model weights... This may take a few minutes.")
-            gdown.download(MODEL_WEIGHTS_URL, tmp_file.name, quiet=False)
-            weights = torch.load(tmp_file.name, map_location='cpu')
-            os.unlink(tmp_file.name)  # Delete the temporary file
-            st.success("Model weights downloaded successfully!")
-            return weights
-    except Exception as e:
-        st.error(f"Error downloading model weights: {str(e)}")
-        return None
+# Model weights path
+MODEL_PATH = "kaggle-quickdraw-weights.pth"
 
 @st.cache_resource
 def load_model():
     """Load and cache the model in memory."""
     try:
-        # Download weights directly to memory
-        weights = download_model_weights()
-        if weights is None:
-            st.stop()
-            
         # Initialize model
         model = strokes_to_seresnext50_32x4d(img_size=32, window=64, num_classes=340)
-        model.load_state_dict(weights)
+        model.load_state_dict(torch.load(MODEL_PATH, map_location='cpu'))
         model.eval()
         return model
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
+        st.error("Please make sure the model weights file exists in the repository.")
         st.stop()
 
 # Title
@@ -101,21 +79,20 @@ def normalize_drawing(strokes):
 def convert_canvas_to_strokes(canvas_result):
     if canvas_result.json_data is not None:
         strokes = []
-        current_time = int(time.time() * 1000)  # Current time in milliseconds
+        current_time = 0  # Start time at 0
         
         for obj in canvas_result.json_data["objects"]:
             if "path" in obj:
                 x_coords = []
                 y_coords = []
                 time_points = []
-                start_time = current_time
                 
                 for i, cmd in enumerate(obj["path"]):
                     if cmd[0] in ["M", "L"]:  # Move to or Line to
                         x_coords.append(float(cmd[1]))
                         y_coords.append(float(cmd[2]))
                         # Simulate time points with even spacing
-                        time_points.append(start_time + i * 50)  # 50ms between points
+                        time_points.append(current_time + i * 50)  # 50ms between points
                 
                 if x_coords:
                     # Normalize coordinates to [0, 1] range
@@ -131,6 +108,7 @@ def convert_canvas_to_strokes(canvas_result):
                     time_points = [t - time_points[0] for t in time_points]
                     
                     strokes.append([x_coords, y_coords, time_points])
+                    current_time = time_points[-1] + 100  # Add gap between strokes
         
         if strokes:
             # Normalize the entire drawing
