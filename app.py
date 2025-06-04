@@ -74,10 +74,91 @@ def load_model():
         st.error("Please make sure the model weights file exists in the repository.")
         st.stop()
 
-def convert_canvas_to_strokes(canvas_result):
-    """Convert canvas data to stroke format matching the original dataset."""
+def convert_canvas_to_strokes_advanced(canvas_result):
+    """
+    Advanced conversion that tries to extract more detailed stroke information.
+    This attempts to capture the actual drawing path more accurately.
+    """
     if canvas_result.json_data is not None:
         strokes = []
+        
+        for obj in canvas_result.json_data["objects"]:
+            if obj.get("type") == "path":
+                # Try to extract from the path data
+                path_data = obj.get("path", [])
+                if not path_data:
+                    continue
+                
+                stroke_x = []
+                stroke_y = []
+                stroke_t = []
+                time_counter = 0
+                
+                current_x, current_y = 0, 0
+                
+                for cmd in path_data:
+                    if len(cmd) < 3:
+                        continue
+                        
+                    cmd_type = cmd[0]
+                    
+                    if cmd_type == "M":  # Move to
+                        current_x, current_y = float(cmd[1]), float(cmd[2])
+                        stroke_x.append(current_x)
+                        stroke_y.append(current_y)
+                        stroke_t.append(time_counter)
+                        time_counter += 16
+                        
+                    elif cmd_type == "L":  # Line to
+                        end_x, end_y = float(cmd[1]), float(cmd[2])
+                        
+                        # Interpolate points between current and end position
+                        distance = np.sqrt((end_x - current_x)**2 + (end_y - current_y)**2)
+                        num_points = max(2, int(distance / 5))  # Point every ~5 pixels
+                        
+                        for i in range(1, num_points + 1):
+                            t = i / num_points
+                            x = current_x + t * (end_x - current_x)
+                            y = current_y + t * (end_y - current_y)
+                            stroke_x.append(x)
+                            stroke_y.append(y)
+                            stroke_t.append(time_counter)
+                            time_counter += 8
+                        
+                        current_x, current_y = end_x, end_y
+                        
+                    elif cmd_type == "Q":  # Quadratic curve
+                        if len(cmd) >= 5:
+                            ctrl_x, ctrl_y = float(cmd[1]), float(cmd[2])
+                            end_x, end_y = float(cmd[3]), float(cmd[4])
+                            
+                            # Sample points along quadratic curve
+                            for t in np.linspace(0.1, 1.0, 10):
+                                x = (1-t)**2 * current_x + 2*(1-t)*t * ctrl_x + t**2 * end_x
+                                y = (1-t)**2 * current_y + 2*(1-t)*t * ctrl_y + t**2 * end_y
+                                stroke_x.append(x)
+                                stroke_y.append(y)
+                                stroke_t.append(time_counter)
+                                time_counter += 8
+                            
+                            current_x, current_y = end_x, end_y
+                
+                if len(stroke_x) > 1:
+                    stroke = np.array([stroke_x, stroke_y, stroke_t])
+                    strokes.append(stroke)
+        
+        return strokes
+    return None
+
+def convert_canvas_to_strokes(canvas_result):
+    """Convert canvas data to stroke format matching the original dataset."""
+    # First try the advanced method
+    strokes = convert_canvas_to_strokes_advanced(canvas_result)
+    
+    # If that doesn't work, fall back to the basic method
+    if not strokes and canvas_result.json_data is not None:
+        strokes = []
+        current_time = 0
         
         for obj in canvas_result.json_data["objects"]:
             if "path" in obj:
@@ -85,19 +166,46 @@ def convert_canvas_to_strokes(canvas_result):
                 stroke_y = []
                 stroke_t = []
                 
+                # Process SVG path commands to extract all points
                 for i, cmd in enumerate(obj["path"]):
-                    if cmd[0] in ["M", "L"]:  # Move to or Line to
+                    if cmd[0] == "M":  # Move to
                         stroke_x.append(float(cmd[1]))
                         stroke_y.append(float(cmd[2]))
-                        stroke_t.append(i * 16)  # Simulate 60fps timing
+                        stroke_t.append(current_time)
+                        current_time += 16  # Simulate ~60fps (16ms intervals)
+                    elif cmd[0] == "L":  # Line to
+                        stroke_x.append(float(cmd[1]))
+                        stroke_y.append(float(cmd[2]))
+                        stroke_t.append(current_time)
+                        current_time += 16
+                    elif cmd[0] == "Q":  # Quadratic curve - extract intermediate points
+                        # For quadratic curves, we have control point and end point
+                        if len(cmd) >= 5:  # Q cx cy x y
+                            # Add some intermediate points for smoother curves
+                            start_x, start_y = stroke_x[-1] if stroke_x else cmd[3], stroke_y[-1] if stroke_y else cmd[4]
+                            ctrl_x, ctrl_y = float(cmd[1]), float(cmd[2])
+                            end_x, end_y = float(cmd[3]), float(cmd[4])
+                            
+                            # Sample points along the quadratic curve
+                            for t in np.linspace(0.2, 1.0, 4):  # Skip t=0 as it's the start point
+                                # Quadratic Bezier formula: B(t) = (1-t)²P₀ + 2(1-t)tP₁ + t²P₂
+                                x = (1-t)**2 * start_x + 2*(1-t)*t * ctrl_x + t**2 * end_x
+                                y = (1-t)**2 * start_y + 2*(1-t)*t * ctrl_y + t**2 * end_y
+                                stroke_x.append(x)
+                                stroke_y.append(y)
+                                stroke_t.append(current_time)
+                                current_time += 8  # Faster sampling for curves
                 
                 if len(stroke_x) > 1:  # Only add strokes with multiple points
-                    # Convert to numpy arrays for easier processing
+                    # Convert to numpy arrays
                     stroke = np.array([stroke_x, stroke_y, stroke_t])
                     strokes.append(stroke)
+                
+                # Add gap between strokes
+                current_time += 100
         
         return strokes
-    return None
+    return strokes
 
 def visualize_strokes(strokes, title="Stroke Data Visualization"):
     """Create a matplotlib plot of the stroke data."""
@@ -236,6 +344,20 @@ def predict_drawing(drawing):
 # Title
 st.title("Enhanced Drawing Recognition App")
 st.write("Draw something in the canvas below or input raw stroke data for recognition!")
+
+# Debug section (can be hidden in production)
+if st.checkbox("🔍 Show Debug Information"):
+    if canvas_result.json_data is not None:
+        st.subheader("Canvas JSON Data Structure")
+        st.json(canvas_result.json_data)
+        
+        st.subheader("Raw Path Analysis")
+        for i, obj in enumerate(canvas_result.json_data.get("objects", [])):
+            st.write(f"**Object {i+1}:**")
+            st.write(f"- Type: {obj.get('type', 'unknown')}")
+            if "path" in obj:
+                st.write(f"- Path commands: {len(obj['path'])}")
+                st.write(f"- First few commands: {obj['path'][:5]}")
 
 # Create two columns for the main interface
 col1, col2 = st.columns([1, 1])
