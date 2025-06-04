@@ -214,7 +214,7 @@ def resample_to(drawing, n):
     return result
 
 
-def process_single_drawing(drawing, out_size=2048, actual_points=256, padding=16):
+def process_single_drawing(drawing, out_size=256, actual_points=256, padding=16):
     # Resample the drawing
     drawing = resample_to(drawing, actual_points)
     
@@ -226,9 +226,9 @@ def process_single_drawing(drawing, out_size=2048, actual_points=256, padding=16
     idx = padding
     for stroke in drawing:
         n = len(stroke[0])
-        points[0, idx:idx + n] = stroke[0]
-        points[1, idx:idx + n] = stroke[1]
-        points[2, idx:idx + n] = 1
+        points[0, idx:idx + n] = stroke[0]  # x coordinates
+        points[1, idx:idx + n] = stroke[1]  # y coordinates
+        points[2, idx:idx + n] = 1          # stroke indicator
         idx += n + padding
     
     # Calculate indices
