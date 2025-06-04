@@ -242,7 +242,7 @@ def resample_to(drawing, n):
     return result
 
 
-def process_single_drawing(drawing, out_size=256, actual_points=256, padding=16):
+def process_single_drawing(drawing, out_size=240, actual_points=240, padding=16):
     """Process a drawing into the format expected by the model."""
     # Resample the drawing to have exactly actual_points points
     drawing = resample_to(drawing, actual_points)
